@@ -1,3 +1,4 @@
+// Importing Necessory Libraries
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
@@ -8,73 +9,122 @@ use solana_program::{
     pubkey::Pubkey,
     sysvar::{rent::Rent, Sysvar},
 };
-
 use spl_token::state::Account as TokenAccount;
-
 use crate::{error::EscrowError, instruction::EscrowInstruction, state::Escrow};
-
 pub struct Processor;
+​
+​
+​
+/*!TODO: 
+                Multi-Channel trade support i.e. multiple rooms concurrency,
+                Admin account to manage the rooms,
+                Room creation and deletion,
+                Room access control,
+                NeoSwap trade fees 
+                */
+​
+​
+​
+// Start of Processor File
 impl Processor {
+    // Start of Process Instruction
+    // This function is called by the entrypoint when program is invoked
+    // Inputs: program id, accounts and instruction data
+    // Output: Program Result
+​
     pub fn process(
         program_id: &Pubkey,
         accounts: &[AccountInfo],
         instruction_data: &[u8],
     ) -> ProgramResult {
         let instruction = EscrowInstruction::unpack(instruction_data)?;
-
+        //Deciding which function to call based on the instruction
         match instruction {
+            // If instruction is InitEscrow
             EscrowInstruction::InitEscrow { amount } => {
                 msg!("Instruction: InitEscrow");
                 Self::process_init_escrow(accounts, amount, program_id)
             }
+            // If instruction is Exchange
             EscrowInstruction::Exchange { amount } => {
                 msg!("Instruction: Exchange");
                 Self::process_exchange(accounts, amount, program_id)
             }
         }
     }
-
+    // End of Process Instruction
+​
+    // Method to run the Multi-party Escrows
+    // Inputs: Accounts, Amount, Program ID and Total Number of Escrows
+    fn escrow_processor(
+        accounts: &[AccountInfo],
+        amount: u64,
+        program_id: &Pubkey,
+        tx_num: u8,
+    ) -> ProgramResult {
+        // Setting inital values
+        let account_info_iter = &mut accounts.iter();
+        let initializer = next_account_info(account_info_iter)?;
+        if !initializer.is_signer {
+            return Err(ProgramError::MissingRequiredSignature);
+        }
+        let mut itrator=0; // Iterator to keep track of the number of Escrows
+        for i in tx_num{
+            // Looping through the number of Escrows
+            process_init_escrow(accounts.slice(itrator.itrator+2), amount, program_id);
+            process_exchange(accounts.slice(itrator.itrator+2), amount, program_id);
+            itrator=itrator+2; // Incrementing the iterator with 2 as each escrow has 2 accounts
+        }
+        
+    }
+    
+    // Method to initialize the Escrow
+    // Inputs: Accounts, Amount and Program ID
+    // Output: Program Result
+​
     fn process_init_escrow(
         accounts: &[AccountInfo],
         amount: u64,
         program_id: &Pubkey,
     ) -> ProgramResult {
+        // Setting inital values
         let account_info_iter = &mut accounts.iter();
         let initializer = next_account_info(account_info_iter)?;
-
+        // Checking for the signer
         if !initializer.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
         }
-
+​
         let temp_token_account = next_account_info(account_info_iter)?;
-
+        
         let token_to_receive_account = next_account_info(account_info_iter)?;
         if *token_to_receive_account.owner != spl_token::id() {
             return Err(ProgramError::IncorrectProgramId);
         }
-
         let escrow_account = next_account_info(account_info_iter)?;
         let rent = &Rent::from_account_info(next_account_info(account_info_iter)?)?;
-
+        // Checking if the account is rent exempt
         if !rent.is_exempt(escrow_account.lamports(), escrow_account.data_len()) {
             return Err(EscrowError::NotRentExempt.into());
         }
-
+​
         let mut escrow_info = Escrow::unpack_unchecked(&escrow_account.try_borrow_data()?)?;
         if escrow_info.is_initialized() {
             return Err(ProgramError::AccountAlreadyInitialized);
         }
-
+​
         escrow_info.is_initialized = true;
         escrow_info.initializer_pubkey = *initializer.key;
         escrow_info.temp_token_account_pubkey = *temp_token_account.key;
         escrow_info.initializer_token_to_receive_account_pubkey = *token_to_receive_account.key;
         escrow_info.expected_amount = amount;
-
+​
+        // Packing the data
         Escrow::pack(escrow_info, &mut escrow_account.try_borrow_mut_data()?)?;
         let (pda, _nonce) = Pubkey::find_program_address(&[b"escrow"], program_id);
-
+​
         let token_program = next_account_info(account_info_iter)?;
+        // Setting the authority of the token account to the PDA
         let owner_change_ix = spl_token::instruction::set_authority(
             token_program.key,
             temp_token_account.key,
@@ -83,7 +133,7 @@ impl Processor {
             initializer.key,
             &[&initializer.key],
         )?;
-
+        // Invoking the final transaction
         msg!("Calling the token program to transfer token account ownership...");
         invoke(
             &owner_change_ix,
@@ -91,12 +141,78 @@ impl Processor {
                 temp_token_account.clone(),
                 initializer.clone(),
                 token_program.clone(),
+                
+                // exchanger(account,amount,program_id),
+                
             ],
         )?;
-
+​
         Ok(())
     }
-
+​
+​
+    // Method to exchange the tokens
+    // Inputs: Accounts, Amount and Program ID
+    // Output: Program Result
+    fn exchanger(
+        accounts: &[AccountInfo],
+        amount: u64,
+        program_id: &Pubkey,
+    ) -> ProgramResult {
+        let account_info_iter = &mut accounts.iter();
+        let taker = next_account_info(account_info_iter)?;
+        // Checking for the sign
+        if !taker.is_signer {
+            return Err(ProgramError::MissingRequiredSignature);
+        }
+        // getting the token account and exchange information
+        let temp_token_account = next_account_info(account_info_iter)?;
+        let initializer_token_to_receive_account = next_account_info(account_info_iter)?;
+        let initializer_main_account = next_account_info(account_info_iter)?;
+        let escrow_account = next_account_info(account_info_iter)?;
+        let token_program = next_account_info(account_info_iter)?;
+​
+        let mut escrow_info = Escrow::unpack(&escrow_account.try_borrow_data()?)?;
+​
+        if escrow_info.temp_token_account_pubkey != *temp_token_account.key {
+            return Err(ProgramError::InvalidAccountData);
+        }
+​
+        if escrow_info.initializer_token_to_receive_account_pubkey
+            != *initializer_token_to_receive_account.key
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+​
+        if escrow_info.expected_amount != amount {
+            return Err(ProgramError::InvalidAccountData);
+        }
+​
+        let (pda, _bump_seed) = Pubkey::find_program_address(&[b"escrow"], program_id);
+        // Start of the token transfer from the PDA to the Taker
+        let transfer_to_initializer_ix = spl_token::instruction::transfer(
+            token_program.key,
+            temp_token_account.key,
+            initializer_token_to_receive_account.key,
+            taker.key,
+            &[&pda],
+            amount,
+        )?;
+        // Invoking the final transaction
+        invoke(
+            &transfer_to_initializer_ix,
+            &[
+                temp_token_account.clone(),
+                initializer_token_to_receive_account.clone(),
+                taker.clone(),
+                token_program.clone(),
+            ],
+        )?;
+    }
+​
+​
+​
+    // Method to Finalize the Escrow trade
     fn process_exchange(
         accounts: &[AccountInfo],
         amount_expected_by_taker: u64,
@@ -104,46 +220,46 @@ impl Processor {
     ) -> ProgramResult {
         let account_info_iter = &mut accounts.iter();
         let taker = next_account_info(account_info_iter)?;
-
+        // Checking for the sign and the signer
         if !taker.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
         }
-
+​
         let takers_sending_token_account = next_account_info(account_info_iter)?;
-
+​
         let takers_token_to_receive_account = next_account_info(account_info_iter)?;
-
+​
         let pdas_temp_token_account = next_account_info(account_info_iter)?;
         let pdas_temp_token_account_info =
             TokenAccount::unpack(&pdas_temp_token_account.try_borrow_data()?)?;
         let (pda, nonce) = Pubkey::find_program_address(&[b"escrow"], program_id);
-
+        // Checking the promised amount
         if amount_expected_by_taker != pdas_temp_token_account_info.amount {
             return Err(EscrowError::ExpectedAmountMismatch.into());
         }
-
+​
         let initializers_main_account = next_account_info(account_info_iter)?;
         let initializers_token_to_receive_account = next_account_info(account_info_iter)?;
         let escrow_account = next_account_info(account_info_iter)?;
-
+​
         let escrow_info = Escrow::unpack(&escrow_account.try_borrow_data()?)?;
-
+        // Checking the promised account information
         if escrow_info.temp_token_account_pubkey != *pdas_temp_token_account.key {
             return Err(ProgramError::InvalidAccountData);
         }
-
+        // Confirming the account Data
         if escrow_info.initializer_pubkey != *initializers_main_account.key {
             return Err(ProgramError::InvalidAccountData);
         }
-
+        // Confirming the Reciever's Data
         if escrow_info.initializer_token_to_receive_account_pubkey
             != *initializers_token_to_receive_account.key
         {
             return Err(ProgramError::InvalidAccountData);
         }
-
+​
         let token_program = next_account_info(account_info_iter)?;
-
+        // Transfering the tokens from the Taker to initializer
         let transfer_to_initializer_ix = spl_token::instruction::transfer(
             token_program.key,
             takers_sending_token_account.key,
@@ -162,9 +278,9 @@ impl Processor {
                 token_program.clone(),
             ],
         )?;
-
+        // Transfering the tokens from the Escrow account to the Taker
         let pda_account = next_account_info(account_info_iter)?;
-
+​
         let transfer_to_taker_ix = spl_token::instruction::transfer(
             token_program.key,
             pdas_temp_token_account.key,
@@ -184,7 +300,7 @@ impl Processor {
             ],
             &[&[&b"escrow"[..], &[nonce]]],
         )?;
-
+        // Demolishing the temporary accounts
         let close_pdas_temp_acc_ix = spl_token::instruction::close_account(
             token_program.key,
             pdas_temp_token_account.key,
@@ -203,7 +319,7 @@ impl Processor {
             ],
             &[&[&b"escrow"[..], &[nonce]]],
         )?;
-
+        // Demolishing the Escrow account
         msg!("Closing the escrow account...");
         **initializers_main_account.try_borrow_mut_lamports()? = initializers_main_account
             .lamports()
@@ -211,7 +327,7 @@ impl Processor {
             .ok_or(EscrowError::AmountOverflow)?;
         **escrow_account.try_borrow_mut_lamports()? = 0;
         *escrow_account.try_borrow_mut_data()? = &mut [];
-
+​
         Ok(())
     }
 }
